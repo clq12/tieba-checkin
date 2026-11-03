@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.log
+forums.json
+.env
+.venv/
