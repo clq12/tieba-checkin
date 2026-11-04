@@ -226,25 +226,54 @@ def main():
         return 4
     if limit:
         forums = forums[:limit]
-    log(f"   共 {len(forums)} 个贴吧待签到")
-
-    log("③ 开始签到")
+    total_forums = len(forums)
+    log(f"   共 {total_forums} 个贴吧待签到")
     t0 = time.time()
-    stats, failed, shielded = batch_sign(signer, forums)
 
-    # 失败重试一轮
+    # 预检查：多个定时点兜底时，已签过就早退，避免重复跑 27 分钟
+    log("③ 预检查今日签到状态")
+    probe_stats = {"success": 0, "exist": 0, "shield": 0, "fail": 0}
+    probed_names = []
+    signed_today = None
+    for f in forums[:3]:
+        st, _ = signer.sign_one(f)
+        probe_stats[st] += 1
+        probed_names.append(f.get("name"))
+        if st == "success":
+            signed_today = False  # 刚签成功 → 今天还没签
+            break
+        if st == "exist":
+            signed_today = True  # 已签 → 今天已经跑过了
+            break
+
+    if signed_today:
+        log("   探测贴吧返回「已签到」，今天已签过，本次直接结束")
+        log(f"   耗时 {int(time.time() - t0)}s")
+        return 0
+
+    log("   今天尚未签到，继续全量")
+    # 探测时已处理的贴吧从列表中移除，其统计稍后合并
+    forums = [f for f in forums if f.get("name") not in probed_names]
+    log(f"   剩余 {len(forums)} 个待签")
+
+    log("④ 开始签到")
+    stats, failed, shielded = batch_sign(signer, forums)
+    for k in probe_stats:
+        stats[k] += probe_stats[k]
+
+    # 失败重试一轮（重试前先扣掉这轮的 fail 计数，避免重复累加）
     if failed:
-        log(f"④ 重试 {len(failed)} 个失败贴吧")
+        log(f"⑤ 重试 {len(failed)} 个失败贴吧")
         signer.refresh_tbs()
+        n_failed = len(failed)
         s2, failed2, _ = batch_sign(signer, failed, delay=(1.5, 2.5), rest_every=0)
-        stats["success"] += s2["success"]
-        stats["exist"] += s2["exist"]
-        stats["shield"] += s2["shield"]
-        stats["fail"] = s2["fail"]
+        stats["fail"] -= n_failed
+        for k in ("success", "exist", "shield", "fail"):
+            stats[k] += s2[k]
         failed = failed2
 
     elapsed = int(time.time() - t0)
-    total = len(forums)
+    total = total_forums
     ok = stats["success"] + stats["exist"]
     rate = ok / total * 100 if total else 0
 
