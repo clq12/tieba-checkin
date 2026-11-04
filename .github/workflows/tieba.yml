@@ -3,10 +3,8 @@ name: 贴吧签到
 on:
   schedule:
     # GitHub cron 固定 UTC，北京时间 = UTC + 8
-    # 故意避开整点（整点是 GitHub 调度高峰，容易被丢弃/延迟）
-    - cron: "37 22 * * *" # 北京 06:37 主时段
-    - cron: "37 23 * * *" # 北京 07:37 兜底（若已签到，脚本 5 秒内自动早退）
-    - cron: "37 0 * * *" # 北京 08:37 二次兜底
+    # 用非整点分钟避开 GitHub 调度高峰（整点最容易被丢弃）
+    - cron: "37 22 * * *" # 北京 06:37
   workflow_dispatch: {} # 手动触发
 
 permissions:
