@@ -4,22 +4,34 @@ on:
   schedule:
     # GitHub cron 固定 UTC，北京时间 = UTC + 8
     #
-    # GitHub 的定时调度是 best-effort：平台高负载时，槽位会被延迟数小时、
-    # 甚至直接丢弃且不重试、不通知（官方明确说明 schedule 可能被 drop）。
-    # 同账号 wnflb-checkin 实测每天延迟 5~9.5 小时且逐日恶化。
-    # 因此这里铺多个时间槽：只要当天有一个槽被成功投递即可。
-    # tieba_sign.py 开头有「已签到则早退」预检查，重复触发会在数秒内结束，
-    # 不会重复签到、不会互相干扰。
+    # GitHub 的定时调度是 best-effort：平台高负载时槽位会被延迟数小时、
+    # 甚至直接丢弃且不重试、不通知。2026-11 实测同账号 wnflb-checkin 每天
+    # 延迟 4.9~9.5 小时且逐日恶化，tieba-checkin 的槽位同样被丢过。
+    #
+    # 因此铺 8 个槽、跨度 17 小时，只要当天有一个被成功投递即可；
+    # 间隔按 2/2/2/2/3/3/3 小时交错，避免延迟抖动把多个槽挤到同一时刻，
+    # 在 concurrency 组里排成一长串。
+    #
+    # 幂等两层保证，重复触发不会重复跑 30 分钟：
+    #   1) 本 workflow 的 .tieba-state 标记（cache 持久化，仅全量且零失败才写）
+    #   2) 脚本内的"探测贴吧 → 已签到则早退"（服务端状态，最终裁决）
     - cron: "37 22 * * *" # 北京 06:37
-    - cron: "37 23 * * *" # 北京 07:37
     - cron: "37 0 * * *"  # 北京 08:37
-    - cron: "37 1 * * *"  # 北京 09:37
     - cron: "37 2 * * *"  # 北京 10:37
     - cron: "37 4 * * *"  # 北京 12:37
-  workflow_dispatch: {} # 手动触发
+    - cron: "37 6 * * *"  # 北京 14:37
+    - cron: "37 9 * * *"  # 北京 17:37
+    - cron: "37 12 * * *" # 北京 20:37
+    - cron: "37 15 * * *" # 北京 23:37
+  workflow_dispatch:
+    inputs:
+      max_forums:
+        description: "最多签到多少个贴吧（0 = 全量）"
+        required: false
+        default: "0"
 
 permissions:
-  actions: write # keepalive 需要
+  actions: write # cache 标记 + keepalive 需要
 
 concurrency:
   group: tieba-sign
@@ -44,14 +56,58 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
+      - name: 计算今日日期
+        id: date
+        run: echo "today=$(TZ=Asia/Shanghai date +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: 恢复签到标记
+        uses: actions/cache/restore@v4
+        with:
+          path: .tieba-state
+          key: tieba-sign-state-${{ steps.date.outputs.today }}
+          restore-keys: |
+            tieba-sign-state-
+
+      - name: 检查今日是否已全量签到
+        id: check
+        env:
+          BDUSS: ${{ secrets.BDUSS }}
+        run: |
+          TODAY="${{ steps.date.outputs.today }}"
+          ACCT=$(printf '%s' "${BDUSS//[[:space:]]/}" | md5sum | cut -c1-8)
+          echo "   今日: $TODAY  账号哈希: $ACCT"
+          if [ -f .tieba-state ]; then
+            IFS='|' read -r D A F T < .tieba-state
+            echo "   现有标记: 日期=$D 账号=$A 失败=$F 共=$T"
+            if [ "$D" = "$TODAY" ] && [ "$A" = "$ACCT" ] && [ "$F" = "0" ]; then
+              echo "today=1" >> "$GITHUB_OUTPUT"
+              echo "   今日已全量签到（$D，共 $T 个），本次跳过"
+              exit 0
+            fi
+            echo "   标记不匹配（日期或账号不同），继续签到"
+          else
+            echo "   无历史标记，继续签到"
+          fi
+          echo "today=0" >> "$GITHUB_OUTPUT"
+
       - name: 执行签到
+        if: steps.check.outputs.today != '1'
         env:
           BDUSS: ${{ secrets.BDUSS }}
           STOKEN: ${{ secrets.STOKEN }}
           PUSH_TYPE: ${{ secrets.PUSH_TYPE }}
           PUSH_KEY: ${{ secrets.PUSH_KEY }}
-          MAX_FORUMS: ${{ vars.MAX_FORUMS }}
+          MAX_FORUMS: ${{ inputs.max_forums || vars.MAX_FORUMS }}
         run: python tieba_sign.py
+
+      - name: 保存签到标记
+        if: steps.check.outputs.today != '1' && success()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .tieba-state
+          key: tieba-sign-state-${{ steps.date.outputs.today }}
+          if-no-files-found: ignore
 
   keepalive:
     name: 保活（防止 60 天无活动被禁用）

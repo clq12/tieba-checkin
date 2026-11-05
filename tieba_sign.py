@@ -44,9 +44,25 @@ EXIST_KEYWORDS = ("已签到", "已经签到", "已签过", "签过了", "alread
 SHIELD_CODES = ("340006", "340007", "340008", "340009")
 SHIELD_KEYWORDS = ("屏蔽", "封禁", "禁言", "不存在", "黑名单")
 
+# 今日签到标记文件，内容: 日期|账号哈希|失败数|总数
+STATE_FILE = ".tieba-state"
+
 
 def log(msg):
     print(f"[{datetime.now(BJ).strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def write_state(bduss, failed, total):
+    """写入今日签到标记，供后续定时触发秒级早退。失败绝不影响签到结果。"""
+    try:
+        acct = hashlib.md5(bduss.encode()).hexdigest()[:8]
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            f.write("%s|%s|%d|%d\n" % (datetime.now(BJ).strftime("%Y-%m-%d"), acct, failed, total))
+        log(f"   已写入签到标记（账号 {acct}，失败 {failed}，共 {total} 个）")
+        return True
+    except Exception as e:
+        log(f"!! 写签到标记失败（不影响签到）: {e}")
+        return False
 
 
 def md5_sign(data):
@@ -226,6 +242,7 @@ def main():
         return 4
     if limit:
         forums = forums[:limit]
+    is_full = (limit == 0)  # 是否跑了全量（限流时不写完整签到标记）
     total_forums = len(forums)
     log(f"   共 {total_forums} 个贴吧待签到")
     t0 = time.time()
@@ -248,6 +265,7 @@ def main():
 
     if signed_today:
         log("   探测贴吧返回「已签到」，今天已签过，本次直接结束")
+        write_state(bduss, 0, 0)  # 今天已完成，后续触发秒退
         log(f"   耗时 {int(time.time() - t0)}s")
         return 0
 
@@ -294,6 +312,10 @@ def main():
     if failed:
         lines.append("> 失败：" + "、".join(f.get("name", "?") for f in failed[:30]))
     push(f"贴吧签到 {ok}/{total}", "\n".join(lines))
+
+    # 全量且零失败才算"今天真的签完了"，写标记供后续定时触发秒退
+    if is_full and stats["fail"] == 0:
+        write_state(bduss, 0, total)
 
     return 0 if stats["fail"] == 0 or rate >= 90 else 1
 

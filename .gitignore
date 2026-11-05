@@ -4,3 +4,4 @@ __pycache__/
 forums.json
 .env
 .venv/
+.tieba-state
