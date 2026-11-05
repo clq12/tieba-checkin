@@ -265,7 +265,6 @@ def main():
 
     if signed_today:
         log("   探测贴吧返回「已签到」，今天已签过，本次直接结束")
-        write_state(bduss, 0, 0)  # 今天已完成，后续触发秒退
         log(f"   耗时 {int(time.time() - t0)}s")
         return 0
 
@@ -313,7 +312,9 @@ def main():
         lines.append("> 失败：" + "、".join(f.get("name", "?") for f in failed[:30]))
     push(f"贴吧签到 {ok}/{total}", "\n".join(lines))
 
-    # 全量且零失败才算"今天真的签完了"，写标记供后续定时触发秒退
+    # 全量且零失败才算"今天真的签完了"，写标记供后续定时触发秒退。
+    # 注意：预检查早退时**不能**写标记——早退只证明"至少一个贴吧签过"，
+    # 若用户在 App 里手动签过某一个就早退，会导致当天其余贴吧全被跳过。
     if is_full and stats["fail"] == 0:
         write_state(bduss, 0, total)
 
